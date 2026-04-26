@@ -1,0 +1,30 @@
+# Build output
+bin/
+obj/
+publish/
+artifacts/
+
+# User/local settings
+*.user
+*.suo
+*.rsuser
+.vs/
+.vscode/
+
+# Rider
+.idea/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local app/package output
+*.nupkg
+
+# Do not commit local Qobuz/Discord runtime data
+presence-debug.log
+coordinator-debug.log
