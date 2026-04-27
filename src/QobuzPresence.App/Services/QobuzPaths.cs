@@ -11,7 +11,7 @@ public static class QobuzPaths
             return null;
         }
 
-        string path = Path.Combine(appData, "Qobuz");
+        string path = Path.Combine(appData, AppConstants.QobuzDirectoryName);
         return Directory.Exists(path) ? path : null;
     }
 
@@ -24,7 +24,7 @@ public static class QobuzPaths
             return null;
         }
 
-        string path = Path.Combine(directory, "qobuz.db");
+        string path = Path.Combine(directory, AppConstants.QobuzDatabaseFileName);
         return File.Exists(path) ? path : null;
     }
 }

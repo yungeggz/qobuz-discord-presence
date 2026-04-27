@@ -5,12 +5,10 @@ namespace QobuzPresence;
 
 internal static class Program
 {
-    private const string MutexName = "Local\\QobuzPresence_User";
-
     [STAThread]
     private static void Main()
     {
-        using Mutex mutex = new(false, MutexName);
+        using Mutex mutex = new(false, AppConstants.MutexName);
 
         if (!mutex.WaitOne(TimeSpan.Zero, true))
         {

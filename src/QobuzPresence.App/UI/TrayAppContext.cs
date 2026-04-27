@@ -10,11 +10,16 @@ public sealed class TrayAppContext : ApplicationContext
     private readonly SettingsService _settingsService;
     private readonly StartupService _startupService;
     private readonly PresenceCoordinator _coordinator;
+    private readonly UpdateCheckService _updateCheckService;
     private readonly SynchronizationContext _uiContext;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _statusMenuItem;
     private readonly ToolStripMenuItem _pauseMenuItem;
     private readonly ToolStripMenuItem _startWithWindowsMenuItem;
+    private readonly ToolStripMenuItem _checkForUpdatesMenuItem;
+    private readonly ToolStripMenuItem _updateAvailableMenuItem;
+
+    private string _latestReleaseUrl = AppConstants.GitHubLatestReleasePageUrl;
 
     public TrayAppContext(
         SettingsService settingsService,
@@ -26,6 +31,7 @@ public sealed class TrayAppContext : ApplicationContext
     {
         _settingsService = settingsService;
         _startupService = startupService;
+        _updateCheckService = new UpdateCheckService();
         _coordinator = new PresenceCoordinator(
             settingsService,
             stateReader,
@@ -44,14 +50,22 @@ public sealed class TrayAppContext : ApplicationContext
         {
             Checked = _coordinator.Settings.StartWithWindows || _startupService.IsEnabled()
         };
+        _checkForUpdatesMenuItem = new ToolStripMenuItem("Check for Updates", null, CheckForUpdates_Click);
+        _updateAvailableMenuItem = new ToolStripMenuItem("Update Available", null, OpenLatestRelease_Click)
+        {
+            Visible = false
+        };
 
         ContextMenuStrip menu = new();
         menu.Items.Add(_statusMenuItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Open Settings", null, OpenSettings_Click));
+        menu.Items.Add(_checkForUpdatesMenuItem);
+        menu.Items.Add(_updateAvailableMenuItem);
         menu.Items.Add(_pauseMenuItem);
         menu.Items.Add(new ToolStripMenuItem("Reconnect Discord", null, Reconnect_Click));
         menu.Items.Add(new ToolStripMenuItem("Clear Presence", null, ClearPresence_Click));
+        menu.Items.Add(new ToolStripMenuItem("Write Diagnostics Snapshot", null, WriteDiagnostics_Click));
         menu.Items.Add(_startWithWindowsMenuItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Exit", null, Exit_Click));
@@ -59,7 +73,7 @@ public sealed class TrayAppContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = LoadTrayIcon(),
-            Text = "Qobuz Discord Presence",
+            Text = AppConstants.AppName,
             ContextMenuStrip = menu,
             Visible = true
         };
@@ -74,6 +88,35 @@ public sealed class TrayAppContext : ApplicationContext
         {
             BeginInvokeOpenSettings();
         }
+
+        if (_coordinator.Settings.CheckForUpdatesOnStartup)
+        {
+            _ = CheckForUpdatesAsync(isStartupCheck: true);
+        }
+    }
+
+    private void WriteDiagnostics_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            QobuzDiagnosticService diagnostics = new();
+            string path = diagnostics.WriteSnapshot();
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "notepad.exe",
+                Arguments = $"\"{path}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                ex.ToString(),
+                "Failed to write diagnostics",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
     private void Coordinator_StatusChanged(object? sender, string status)
@@ -86,25 +129,21 @@ public sealed class TrayAppContext : ApplicationContext
         _uiContext.Post(_ =>
         {
             _notifyIcon.Text = track is null
-                ? "Qobuz Discord Presence"
+                ? AppConstants.AppName
                 : BuildTrayTooltip(track);
         }, null);
     }
 
     private static string BuildTrayTooltip(TrackSnapshot track)
     {
-        string text = $"Qobuz Discord Presence: {track.Artist} - {track.Title}";
+        string text = $"{AppConstants.AppName}: {track.Artist} - {track.Title}";
 
-        // NotifyIcon.Text has a fairly small tooltip length limit.
-        // Keep it safe so long titles do not throw or get awkwardly clipped.
-        const int maxLength = 127;
-
-        if (text.Length <= maxLength)
+        if (text.Length <= AppConstants.NotifyIconMaxTextLength)
         {
             return text;
         }
 
-        return text[..(maxLength - 1)] + "…";
+        return text[..(AppConstants.NotifyIconMaxTextLength - 3)] + "...";
     }
 
     private void SetStatus(string status)
@@ -132,6 +171,11 @@ public sealed class TrayAppContext : ApplicationContext
     private void OpenSettings_Click(object? sender, EventArgs e)
     {
         ShowSettings();
+    }
+
+    private void CheckForUpdates_Click(object? sender, EventArgs e)
+    {
+        _ = CheckForUpdatesAsync(isStartupCheck: false);
     }
 
     private void ShowSettings()
@@ -179,6 +223,85 @@ public sealed class TrayAppContext : ApplicationContext
     private void Exit_Click(object? sender, EventArgs e)
     {
         ExitThread();
+    }
+
+    private async Task CheckForUpdatesAsync(bool isStartupCheck)
+    {
+        SetUpdateMenuState("Checking for Updates...", enabled: false);
+
+        UpdateCheckResult result = await _updateCheckService.CheckForUpdatesAsync();
+
+        _uiContext.Post(_ =>
+        {
+            SetUpdateMenuState("Check for Updates", enabled: true);
+
+            if (!string.IsNullOrWhiteSpace(result.ReleaseUrl))
+            {
+                _latestReleaseUrl = result.ReleaseUrl;
+            }
+
+            if (result.IsUpdateAvailable && !string.IsNullOrWhiteSpace(result.LatestVersion))
+            {
+                _updateAvailableMenuItem.Text = $"Update Available: v{result.LatestVersion}";
+                _updateAvailableMenuItem.Visible = true;
+
+                if (isStartupCheck)
+                {
+                    _notifyIcon.BalloonTipTitle = AppConstants.AppName;
+                    _notifyIcon.BalloonTipText = $"Update available: v{result.LatestVersion}";
+                    _notifyIcon.ShowBalloonTip(5000);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        $"Update available: v{result.LatestVersion}{Environment.NewLine}{Environment.NewLine}Current version: v{result.CurrentVersion}",
+                        "Update Available",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+
+                return;
+            }
+
+            if (!isStartupCheck)
+            {
+                string message = string.IsNullOrWhiteSpace(result.ErrorMessage)
+                    ? $"You're up to date on v{result.CurrentVersion}."
+                    : $"Update check failed: {result.ErrorMessage}";
+
+                MessageBox.Show(
+                    message,
+                    "Check for Updates",
+                    MessageBoxButtons.OK,
+                    string.IsNullOrWhiteSpace(result.ErrorMessage) ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+        }, null);
+    }
+
+    private void OpenLatestRelease_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _latestReleaseUrl,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                ex.ToString(),
+                "Failed to open release page",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private void SetUpdateMenuState(string text, bool enabled)
+    {
+        _checkForUpdatesMenuItem.Text = text;
+        _checkForUpdatesMenuItem.Enabled = enabled;
     }
 
     protected override void Dispose(bool disposing)

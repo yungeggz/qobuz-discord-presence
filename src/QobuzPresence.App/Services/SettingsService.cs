@@ -12,9 +12,9 @@ public sealed class SettingsService
 
     public string SettingsDirectory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "QobuzPresence");
+        AppConstants.AppDataDirectoryName);
 
-    public string SettingsPath => Path.Combine(SettingsDirectory, "settings.json");
+    public string SettingsPath => Path.Combine(SettingsDirectory, AppConstants.SettingsFileName);
 
     public AppSettings Load()
     {
