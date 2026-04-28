@@ -18,6 +18,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.7" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\QobuzPresence.Shared\QobuzPresence.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="UI\qobuz-presence.ico" />
   </ItemGroup>
 </Project>

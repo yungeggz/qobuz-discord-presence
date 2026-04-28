@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace QobuzPresence.Helpers;
 
-internal static class JsonElementHelper
+public static class JsonElementHelper
 {
     public static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement property)
     {

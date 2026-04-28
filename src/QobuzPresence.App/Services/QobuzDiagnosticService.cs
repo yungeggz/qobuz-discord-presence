@@ -358,8 +358,8 @@ public sealed class QobuzDiagnosticService
                     output.AppendLine($"Window Artist: \"{activeWindow.Artist}\"");
                     output.AppendLine($"DB Title:      \"{best.Title}\"");
                     output.AppendLine($"DB Artist:     \"{best.Artist}\"");
-                    output.AppendLine($"Artist match-ish: {TextUtility.ContainsInsensitive(best.Artist, activeWindow.Artist) || TextUtility.ContainsInsensitive(activeWindow.Artist, best.Artist)}");
-                    output.AppendLine($"Title match-ish:  {TextUtility.ContainsInsensitive(best.Title, activeWindow.Title) || TextUtility.ContainsInsensitive(activeWindow.Title, best.Title)}");
+                    output.AppendLine($"ArtistMatches: {TrackMatchingUtility.ArtistMatches(best.Artist, activeWindow.Artist)}");
+                    output.AppendLine($"TitleMatchStage: {TrackMatchingUtility.GetTitleMatchStage(best.Title, activeWindow.Title)}");
                 }
             }
         }

@@ -7,12 +7,19 @@ namespace QobuzPresence.Services;
 public sealed class PresenceCoordinator : IDisposable
 {
     private static readonly TimeSpan s_activePollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan s_periodicPresenceRefreshInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan[] s_qualityRetrySchedule =
     [
         TimeSpan.FromSeconds(1),
         TimeSpan.FromSeconds(5),
         TimeSpan.FromSeconds(10),
         TimeSpan.FromSeconds(20)
+    ];
+    private static readonly TimeSpan[] s_presenceRefreshRetrySchedule =
+    [
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30)
     ];
 
     private readonly SettingsService _settingsService;
@@ -32,6 +39,8 @@ public sealed class PresenceCoordinator : IDisposable
     private bool _qualityResolvedForCurrentTrack;
     private PresenceSignature? _lastPresenceSignature;
     private PresenceSettingsSignature? _lastPresenceSettingsSignature;
+    private int _presenceRefreshRetryIndex;
+    private DateTimeOffset? _lastPresenceSentAtUtc;
     private bool _presenceClearedWhileWaiting;
 
     public event EventHandler<string>? StatusChanged;
@@ -147,6 +156,8 @@ public sealed class PresenceCoordinator : IDisposable
         _trackDetectedAtUtc = DateTimeOffset.MinValue;
         _qualityResolvedForCurrentTrack = false;
         _qualityRetryIndex = 0;
+        _presenceRefreshRetryIndex = 0;
+        _lastPresenceSentAtUtc = null;
     }
 
     private async Task TickAsync()
@@ -174,6 +185,16 @@ public sealed class PresenceCoordinator : IDisposable
         }
 
         return now - _trackDetectedAtUtc >= s_qualityRetrySchedule[_qualityRetryIndex];
+    }
+
+    private bool IsPresenceRefreshRetryDue(DateTimeOffset now)
+    {
+        if (_presenceRefreshRetryIndex >= s_presenceRefreshRetrySchedule.Length)
+        {
+            return false;
+        }
+
+        return now - _trackDetectedAtUtc >= s_presenceRefreshRetrySchedule[_presenceRefreshRetryIndex];
     }
 
     private void TickCore()
@@ -231,11 +252,17 @@ public sealed class PresenceCoordinator : IDisposable
             _trackDetectedAtUtc = now;
             _qualityRetryIndex = 0;
             _qualityResolvedForCurrentTrack = false;
+            _presenceRefreshRetryIndex = 0;
         }
 
         bool qualityRetryDue = !isNewTrack && IsQualityRetryDue(now);
+        bool presenceRefreshRetryDue = !isNewTrack && IsPresenceRefreshRetryDue(now);
+        bool periodicPresenceRefreshDue =
+            _lastPresenceSentAtUtc.HasValue &&
+            now - _lastPresenceSentAtUtc.Value >= s_periodicPresenceRefreshInterval;
+        bool forcePresenceRefresh = presenceRefreshRetryDue || periodicPresenceRefreshDue;
 
-        if (!isNewTrack && !timerBaselineChanged && !qualityRetryDue && !presenceSettingsChanged)
+        if (!isNewTrack && !timerBaselineChanged && !qualityRetryDue && !presenceSettingsChanged && !forcePresenceRefresh)
         {
             return;
         }
@@ -243,6 +270,11 @@ public sealed class PresenceCoordinator : IDisposable
         if (qualityRetryDue)
         {
             _qualityRetryIndex++;
+        }
+
+        if (presenceRefreshRetryDue)
+        {
+            _presenceRefreshRetryIndex++;
         }
 
         TrackResolutionResult resolution = QobuzTrackResolutionHelper.Resolve(
@@ -265,7 +297,7 @@ public sealed class PresenceCoordinator : IDisposable
 
         PresenceSignature presenceSignature = BuildPresenceSignature(track, _settings);
 
-        if (presenceSignature == _lastPresenceSignature)
+        if (!forcePresenceRefresh && presenceSignature == _lastPresenceSignature)
         {
             return;
         }
@@ -276,6 +308,7 @@ public sealed class PresenceCoordinator : IDisposable
             _lastPlaybackStartUtc = queueState.PlaybackTiming?.StartedAtUtc;
             _lastPresenceSignature = presenceSignature;
             _lastPresenceSettingsSignature = currentSettingsSignature;
+            _lastPresenceSentAtUtc = now;
             _presenceClearedWhileWaiting = false;
 
             OnTrackChanged(track);

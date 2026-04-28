@@ -3,7 +3,7 @@ using QobuzPresence.Models;
 
 namespace QobuzPresence.Helpers;
 
-internal static class QobuzTrackMetadataParser
+public static class QobuzTrackMetadataParser
 {
     public static ParsedTrackMetadata Parse(string? dataJson)
     {
@@ -77,7 +77,7 @@ internal static class QobuzTrackMetadataParser
     }
 }
 
-internal sealed record ParsedTrackMetadata(
+public sealed record ParsedTrackMetadata(
     string? Title,
     string? Artist,
     string? AlbumTitle,

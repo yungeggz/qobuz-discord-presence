@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="src/QobuzPresence.App/QobuzPresence.App.csproj" />
+  <Project Path="src/QobuzPresence.Shared/QobuzPresence.Shared.csproj" />
 </Solution>

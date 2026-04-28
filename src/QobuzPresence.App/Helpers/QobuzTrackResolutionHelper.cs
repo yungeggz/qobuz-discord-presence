@@ -15,8 +15,15 @@ internal static class QobuzTrackResolutionHelper
 
         if (selectedLookup is not null && TrackMatchesWindow(selectedLookup.Track, activeWindowTrack))
         {
+            TrackSnapshot resolvedTrack = selectedLookup.Track;
+
+            if (ShouldPreferWindowTitle(selectedLookup.Track.Title, activeWindowTrack.Title))
+            {
+                resolvedTrack = resolvedTrack with { Title = activeWindowTrack.Title };
+            }
+
             return new TrackResolutionResult(
-                selectedLookup.Track with { PlaybackTiming = playbackTiming },
+                resolvedTrack with { PlaybackTiming = playbackTiming },
                 TrackResolutionSource.SelectedTrackIdLTrack);
         }
 
@@ -65,17 +72,15 @@ internal static class QobuzTrackResolutionHelper
 
     private static bool TrackMatchesWindow(TrackSnapshot track, WindowTrackInfo windowTrack)
     {
-        string trackTitle = TextUtility.NormalizeForComparison(track.Title);
-        string trackArtist = TextUtility.NormalizeForComparison(track.Artist);
-        string windowTitle = TextUtility.NormalizeForComparison(windowTrack.Title);
-        string windowArtist = TextUtility.NormalizeForComparison(windowTrack.Artist ?? string.Empty);
+        return TrackMatchingUtility.TrackMatchesWindow(
+            track.Title,
+            track.Artist,
+            windowTrack.Title,
+            windowTrack.Artist);
+    }
 
-        bool titleMatches = trackTitle == windowTitle;
-        bool artistMatches =
-            trackArtist == windowArtist ||
-            trackArtist.Contains(windowArtist, StringComparison.OrdinalIgnoreCase) ||
-            windowArtist.Contains(trackArtist, StringComparison.OrdinalIgnoreCase);
-
-        return titleMatches && artistMatches;
+    private static bool ShouldPreferWindowTitle(string trackTitle, string windowTitle)
+    {
+        return TrackMatchingUtility.ShouldPreferWindowTitle(trackTitle, windowTitle);
     }
 }

@@ -1,12 +1,10 @@
-using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using QobuzPresence.Helpers;
+using QobuzPresence.Models;
 
 if (args.Length == 0)
 {
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  QobuzCacheProbe <title> [artist]");
-    Console.WriteLine("  QobuzCacheProbe --list-tables");
-    Console.WriteLine("  QobuzCacheProbe --table-info <table>");
+    PrintUsage();
     return 1;
 }
 
@@ -48,6 +46,23 @@ if (args[0] == "--table-info")
     return 0;
 }
 
+if (args[0] == "--match-titles")
+{
+    if (args.Length < 3)
+    {
+        Console.WriteLine("Usage: QobuzCacheProbe --match-titles <dbTitle> <windowTitle>");
+        return 1;
+    }
+
+    DumpTitleMatch(args[1], args[2]);
+    return 0;
+}
+
+if (args[0] == "--track-id")
+{
+    return HandleTrackIdMode(connection, dbPath, args);
+}
+
 string title = args[0];
 string? artist = args.Length > 1 ? args[1] : null;
 
@@ -61,6 +76,109 @@ DumpSTrackMatches(connection, title, artist);
 DumpSTrackFtsMatches(connection, title, artist);
 
 return 0;
+
+static int HandleTrackIdMode(SqliteConnection connection, string dbPath, string[] args)
+{
+    if (args.Length < 4)
+    {
+        Console.WriteLine("Usage: QobuzCacheProbe --track-id <id> --window-title <title> [--window-artist <artist>]");
+        return 1;
+    }
+
+    if (!long.TryParse(args[1], out long trackId))
+    {
+        Console.WriteLine($"Invalid track id: {args[1]}");
+        return 1;
+    }
+
+    string? windowTitle = null;
+    string? windowArtist = null;
+
+    for (int i = 2; i < args.Length; i++)
+    {
+        switch (args[i])
+        {
+            case "--window-title":
+                if (i + 1 >= args.Length)
+                {
+                    Console.WriteLine("Missing value for --window-title.");
+                    return 1;
+                }
+
+                windowTitle = args[++i];
+                break;
+
+            case "--window-artist":
+                if (i + 1 >= args.Length)
+                {
+                    Console.WriteLine("Missing value for --window-artist.");
+                    return 1;
+                }
+
+                windowArtist = args[++i];
+                break;
+
+            default:
+                Console.WriteLine($"Unknown argument: {args[i]}");
+                return 1;
+        }
+    }
+
+    if (string.IsNullOrWhiteSpace(windowTitle))
+    {
+        Console.WriteLine("Missing required --window-title.");
+        return 1;
+    }
+
+    Console.WriteLine($"DB: {dbPath}");
+    Console.WriteLine($"TrackId: {trackId}");
+    Console.WriteLine($"WindowTitle: {windowTitle}");
+    Console.WriteLine($"WindowArtist: {windowArtist ?? "(null)"}");
+    Console.WriteLine();
+
+    TrackDbRow? lTrack = QueryLTrackByTrackId(connection, trackId);
+    TrackDbRow? sTrack = QuerySTrackByTrackId(connection, trackId);
+    TrackDbRow? ftsTrack = QuerySTrackFtsByTrackId(connection, trackId);
+
+    DumpTrackRow("L_Track", lTrack);
+    DumpTrackRow("S_Track", sTrack);
+    DumpTrackRow("S_Track_fts", ftsTrack);
+
+    TrackDbRow? best = lTrack ?? sTrack ?? ftsTrack;
+
+    Console.WriteLine("=== Selected Track Resolver Preview ===");
+
+    if (best is null)
+    {
+        Console.WriteLine("No DB row found for track id.");
+        return 0;
+    }
+
+    bool artistMatches = TrackMatchingUtility.ArtistMatches(best.Artist, windowArtist);
+    TrackTitleMatchStage titleStage = TrackMatchingUtility.GetTitleMatchStage(best.Title, windowTitle);
+
+    Console.WriteLine($"ResolvedDbTitle: {best.Title}");
+    Console.WriteLine($"ResolvedDbArtist: {best.Artist}");
+    Console.WriteLine($"ArtistMatches: {artistMatches}");
+    Console.WriteLine($"TitleMatchStage: {titleStage}");
+    Console.WriteLine($"ShouldPreferWindowTitle: {TrackMatchingUtility.ShouldPreferWindowTitle(best.Title, windowTitle)}");
+    Console.WriteLine($"WouldUseSelectedTrackMetadata: {artistMatches && titleStage is not TrackTitleMatchStage.None}");
+    Console.WriteLine($"CoverUrl: {best.CoverUrl ?? "null"}");
+    Console.WriteLine($"Quality: {best.QualityText ?? "null"}");
+    Console.WriteLine($"DurationSeconds: {best.DurationSeconds?.ToString() ?? "null"}");
+
+    return 0;
+}
+
+static void PrintUsage()
+{
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  QobuzCacheProbe <title> [artist]");
+    Console.WriteLine("  QobuzCacheProbe --track-id <id> --window-title <title> [--window-artist <artist>]");
+    Console.WriteLine("  QobuzCacheProbe --match-titles <dbTitle> <windowTitle>");
+    Console.WriteLine("  QobuzCacheProbe --list-tables");
+    Console.WriteLine("  QobuzCacheProbe --table-info <table>");
+}
 
 static void ListTables(SqliteConnection connection)
 {
@@ -76,8 +194,7 @@ static void ListTables(SqliteConnection connection)
 
     while (reader.Read())
     {
-        string name = reader.GetString(0);
-        Console.WriteLine(name);
+        Console.WriteLine(reader.GetString(0));
     }
 }
 
@@ -92,6 +209,18 @@ static void DumpTableInfo(SqliteConnection connection, string tableName)
     {
         Console.WriteLine($"{reader.GetValue(0)}|{reader.GetValue(1)}|{reader.GetValue(2)}");
     }
+}
+
+static void DumpTitleMatch(string dbTitle, string windowTitle)
+{
+    Console.WriteLine($"DbTitle: {dbTitle}");
+    Console.WriteLine($"WindowTitle: {windowTitle}");
+    Console.WriteLine($"NormalizedDbTitle: {TextUtility.NormalizeForComparison(dbTitle)}");
+    Console.WriteLine($"NormalizedWindowTitle: {TextUtility.NormalizeForComparison(windowTitle)}");
+    Console.WriteLine($"StrippedDbTitle: {TextUtility.StripBracketedDecorations(dbTitle)}");
+    Console.WriteLine($"StrippedWindowTitle: {TextUtility.StripBracketedDecorations(windowTitle)}");
+    Console.WriteLine($"TitleMatchStage: {TrackMatchingUtility.GetTitleMatchStage(dbTitle, windowTitle)}");
+    Console.WriteLine($"ShouldPreferWindowTitle: {TrackMatchingUtility.ShouldPreferWindowTitle(dbTitle, windowTitle)}");
 }
 
 static void DumpLTrackMatches(SqliteConnection connection, string title, string? artist)
@@ -113,29 +242,29 @@ static void DumpLTrackMatches(SqliteConnection connection, string title, string?
 
     while (reader.Read())
     {
-        count++;
-
         string? data = ReadString(reader, "data");
-        JsonTrackMetadata metadata = ParseMetadata(data);
-        string resolvedArtist = FirstNonEmpty(
+        ParsedTrackMetadata metadata = QobuzTrackMetadataParser.Parse(data);
+        string resolvedArtist = TextUtility.FirstNonEmpty(
             metadata.Artist,
             "(missing artist)")!;
 
-        if (!ArtistMatches(resolvedArtist, artist))
+        if (!TrackMatchingUtility.ArtistMatches(resolvedArtist, artist))
         {
             continue;
         }
 
+        count++;
+
         Console.WriteLine($"track_id={ReadInt64(reader, "track_id")}, id={ReadInt64(reader, "id")}");
-        Console.WriteLine($"title={FirstNonEmpty(metadata.Title, ReadString(reader, "title"), "(missing title)")}");
+        Console.WriteLine($"title={TextUtility.FirstNonEmpty(metadata.Title, ReadString(reader, "title"), "(missing title)")}");
         Console.WriteLine($"artist={resolvedArtist}");
         Console.WriteLine($"album_id={ReadString(reader, "album_id") ?? "null"}");
         Console.WriteLine($"album_title={metadata.AlbumTitle ?? "null"}");
         Console.WriteLine($"added_date={ReadString(reader, "added_date") ?? "null"}");
-        Console.WriteLine($"duration={FirstNonEmpty(metadata.DurationSeconds?.ToString(), ReadDouble(reader, "duration")?.ToString(), "null")}");
-        Console.WriteLine($"cover={metadata.CoverUrl ?? "null"}");
-        Console.WriteLine($"metadata_quality={metadata.Quality ?? "null"}");
-        Console.WriteLine($"cached_quality={FormatQuality(ReadInt32(reader, "bit_depth"), ReadDouble(reader, "sampling_rate"), 2, null) ?? "null"}");
+        Console.WriteLine($"duration={TextUtility.FirstNonEmpty(metadata.Duration?.TotalSeconds.ToString(), ReadDouble(reader, "duration")?.ToString(), "null")}");
+        Console.WriteLine($"cover={metadata.CoverImageUrl ?? "null"}");
+        Console.WriteLine($"metadata_quality={metadata.Quality?.DisplayText ?? "null"}");
+        Console.WriteLine($"cached_quality={BuildCachedQualityText(ReadInt32(reader, "bit_depth"), ReadDouble(reader, "sampling_rate"), 2, null) ?? "null"}");
         Console.WriteLine();
     }
 
@@ -165,14 +294,14 @@ static void DumpSTrackMatches(SqliteConnection connection, string title, string?
 
     while (reader.Read())
     {
-        count++;
-
         string resolvedArtist = ReadString(reader, "track_artists_names") ?? "(missing artist)";
 
-        if (!ArtistMatches(resolvedArtist, artist))
+        if (!TrackMatchingUtility.ArtistMatches(resolvedArtist, artist))
         {
             continue;
         }
+
+        count++;
 
         Console.WriteLine($"id={ReadInt64(reader, "id")}");
         Console.WriteLine($"title={ReadString(reader, "title") ?? "(missing title)"}");
@@ -210,14 +339,14 @@ static void DumpSTrackFtsMatches(SqliteConnection connection, string title, stri
 
     while (reader.Read())
     {
-        count++;
-
         string resolvedArtist = ReadString(reader, "track_artists_names") ?? "(missing artist)";
 
-        if (!ArtistMatches(resolvedArtist, artist))
+        if (!TrackMatchingUtility.ArtistMatches(resolvedArtist, artist))
         {
             continue;
         }
+
+        count++;
 
         Console.WriteLine($"rowid={ReadInt64(reader, "rowid")}");
         Console.WriteLine($"title={ReadString(reader, "title") ?? "(missing title)"}");
@@ -231,6 +360,113 @@ static void DumpSTrackFtsMatches(SqliteConnection connection, string title, stri
         Console.WriteLine("No exact title matches.");
         Console.WriteLine();
     }
+}
+
+static void DumpTrackRow(string label, TrackDbRow? row)
+{
+    Console.WriteLine($"=== {label} by track id ===");
+
+    if (row is null)
+    {
+        Console.WriteLine("No row found.");
+        Console.WriteLine();
+        return;
+    }
+
+    Console.WriteLine($"track_id={row.TrackId}");
+    Console.WriteLine($"title={row.Title}");
+    Console.WriteLine($"artist={row.Artist}");
+    Console.WriteLine($"album={row.AlbumTitle ?? "null"}");
+    Console.WriteLine($"cover={row.CoverUrl ?? "null"}");
+    Console.WriteLine($"quality={row.QualityText ?? "null"}");
+    Console.WriteLine($"duration={row.DurationSeconds?.ToString() ?? "null"}");
+    Console.WriteLine();
+}
+
+static TrackDbRow? QueryLTrackByTrackId(SqliteConnection connection, long trackId)
+{
+    using SqliteCommand command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT *
+        FROM L_Track
+        WHERE track_id = $trackId OR id = $trackId
+        LIMIT 1
+        """;
+    command.Parameters.AddWithValue("$trackId", trackId);
+
+    using SqliteDataReader reader = command.ExecuteReader();
+
+    if (!reader.Read())
+    {
+        return null;
+    }
+
+    ParsedTrackMetadata metadata = QobuzTrackMetadataParser.Parse(ReadString(reader, "data"));
+
+    return new TrackDbRow(
+        ReadInt64(reader, "track_id") ?? trackId,
+        TextUtility.FirstNonEmpty(metadata.Title, ReadString(reader, "title"), "(missing title)")!,
+        TextUtility.FirstNonEmpty(metadata.Artist, ReadString(reader, "artist_name"), "(missing artist)")!,
+        metadata.AlbumTitle,
+        metadata.CoverImageUrl,
+        metadata.Quality?.DisplayText ?? BuildCachedQualityText(ReadInt32(reader, "bit_depth"), ReadDouble(reader, "sampling_rate"), 2, null),
+        metadata.Duration?.TotalSeconds ?? ReadDouble(reader, "duration"));
+}
+
+static TrackDbRow? QuerySTrackByTrackId(SqliteConnection connection, long trackId)
+{
+    using SqliteCommand command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT id, title, track_artists_names, release_name, release_image_small, duration
+        FROM S_Track
+        WHERE id = $trackId OR rowid = $trackId
+        LIMIT 1
+        """;
+    command.Parameters.AddWithValue("$trackId", trackId);
+
+    using SqliteDataReader reader = command.ExecuteReader();
+
+    if (!reader.Read())
+    {
+        return null;
+    }
+
+    return new TrackDbRow(
+        ReadInt64(reader, "id") ?? trackId,
+        ReadString(reader, "title") ?? "(missing title)",
+        ReadString(reader, "track_artists_names") ?? "(missing artist)",
+        ReadString(reader, "release_name"),
+        ReadString(reader, "release_image_small"),
+        null,
+        ReadDouble(reader, "duration"));
+}
+
+static TrackDbRow? QuerySTrackFtsByTrackId(SqliteConnection connection, long trackId)
+{
+    using SqliteCommand command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT rowid, title, track_artists_names, release_name
+        FROM S_Track_fts
+        WHERE rowid = $trackId
+        LIMIT 1
+        """;
+    command.Parameters.AddWithValue("$trackId", trackId);
+
+    using SqliteDataReader reader = command.ExecuteReader();
+
+    if (!reader.Read())
+    {
+        return null;
+    }
+
+    return new TrackDbRow(
+        ReadInt64(reader, "rowid") ?? trackId,
+        ReadString(reader, "title") ?? "(missing title)",
+        ReadString(reader, "track_artists_names") ?? "(missing artist)",
+        ReadString(reader, "release_name"),
+        null,
+        null,
+        null);
 }
 
 static string? ReadString(SqliteDataReader reader, string columnName)
@@ -269,225 +505,26 @@ static double? ReadDouble(SqliteDataReader reader, string columnName)
     return reader.IsDBNull(ordinal) ? null : Convert.ToDouble(reader.GetValue(ordinal));
 }
 
-static string? FirstNonEmpty(params string?[] values)
-{
-    return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-}
-
-static bool ArtistMatches(string candidateArtist, string? requestedArtist)
-{
-    if (string.IsNullOrWhiteSpace(requestedArtist))
-    {
-        return true;
-    }
-
-    string normalizedCandidate = Normalize(candidateArtist);
-    string normalizedRequested = Normalize(requestedArtist);
-
-    return normalizedCandidate == normalizedRequested ||
-        normalizedCandidate.Contains(normalizedRequested, StringComparison.Ordinal) ||
-        normalizedRequested.Contains(normalizedCandidate, StringComparison.Ordinal);
-}
-
-static string Normalize(string value)
-{
-    return value.Trim().ToLowerInvariant();
-}
-
-static JsonTrackMetadata ParseMetadata(string? data)
-{
-    if (string.IsNullOrWhiteSpace(data))
-    {
-        return JsonTrackMetadata.Empty;
-    }
-
-    try
-    {
-        using JsonDocument document = JsonDocument.Parse(data);
-        JsonElement root = document.RootElement;
-
-        string? title = TryGetString(root, "title");
-        string? artist = TryGetNestedString(root, "performer", "name")
-            ?? TryGetNestedString(root, "artist", "name")
-            ?? TryGetNestedString(root, "album", "artist", "name");
-        string? albumTitle = TryGetNestedString(root, "album", "title");
-
-        string? cover = TryGetNestedString(root, "album", "assetsAPI", "large")
-            ?? TryGetNestedString(root, "album", "assetsAPI", "small")
-            ?? TryGetNestedString(root, "album", "image", "large")
-            ?? TryGetNestedString(root, "album", "image", "small");
-
-        string? quality = FormatQuality(
-            TryGetInt32(root, "maximum_bit_depth") ?? TryGetInt32(root, "bit_depth"),
-            TryGetDouble(root, "maximum_sampling_rate") ?? TryGetDouble(root, "sampling_rate"),
-            TryGetInt32(root, "maximum_channel_count") ?? TryGetInt32(root, "channel_count"),
-            TryGetBool(root, "hires") == true || TryGetBool(root, "hires_streamable") == true);
-
-        quality ??= FormatQuality(
-            TryGetInt32FromPath(root, "album", "maximum_bit_depth") ?? TryGetInt32FromPath(root, "album", "bit_depth"),
-            TryGetDoubleFromPath(root, "album", "maximum_sampling_rate") ?? TryGetDoubleFromPath(root, "album", "sampling_rate"),
-            TryGetInt32FromPath(root, "album", "maximum_channel_count") ?? TryGetInt32FromPath(root, "album", "channel_count"),
-            TryGetBoolFromPath(root, "album", "hires") == true || TryGetBoolFromPath(root, "album", "hires_streamable") == true);
-
-        double? duration = TryGetDouble(root, "duration");
-
-        return new JsonTrackMetadata(title, artist, albumTitle, cover, quality, duration);
-    }
-    catch
-    {
-        return JsonTrackMetadata.Empty;
-    }
-}
-
-static string? FormatQuality(int? bitDepth, double? samplingRate, int? channelCount, bool? hires)
+static string? BuildCachedQualityText(int? bitDepth, double? samplingRate, int? channelCount, bool? hires)
 {
     if (!bitDepth.HasValue || !samplingRate.HasValue)
     {
         return null;
     }
 
-    double rate = samplingRate.Value >= 1000
+    double samplingRateKhz = samplingRate.Value >= 1000
         ? samplingRate.Value / 1000
         : samplingRate.Value;
 
-    string prefix = hires == true || bitDepth.Value > 16 || rate > 44.1
-        ? "Hi-Res"
-        : "Lossless";
-
-    string channels = channelCount switch
-    {
-        2 => "Stereo",
-        > 0 => $"{channelCount}ch",
-        _ => "Stereo"
-    };
-
-    return $"{prefix} • {bitDepth.Value}-bit / {rate:g} kHz • {channels}";
+    bool isHiRes = hires == true || bitDepth.Value > 16 || samplingRateKhz > 44.1;
+    return new AudioQuality(bitDepth.Value, samplingRateKhz, channelCount, isHiRes, "Probe cache").DisplayText;
 }
 
-static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement property)
-{
-    if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(propertyName, out property))
-    {
-        return true;
-    }
-
-    property = default;
-    return false;
-}
-
-static string? TryGetString(JsonElement element, string propertyName)
-{
-    return TryGetProperty(element, propertyName, out JsonElement property) && property.ValueKind == JsonValueKind.String
-        ? property.GetString()
-        : null;
-}
-
-static string? TryGetNestedString(JsonElement element, params string[] path)
-{
-    JsonElement current = element;
-
-    foreach (string segment in path)
-    {
-        if (!TryGetProperty(current, segment, out current))
-        {
-            return null;
-        }
-    }
-
-    return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
-}
-
-static int? TryGetInt32(JsonElement element, string propertyName)
-{
-    if (!TryGetProperty(element, propertyName, out JsonElement property))
-    {
-        return null;
-    }
-
-    return property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out int value)
-        ? value
-        : null;
-}
-
-static int? TryGetInt32FromPath(JsonElement element, params string[] path)
-{
-    JsonElement current = element;
-
-    foreach (string segment in path[..^1])
-    {
-        if (!TryGetProperty(current, segment, out current))
-        {
-            return null;
-        }
-    }
-
-    return TryGetInt32(current, path[^1]);
-}
-
-static double? TryGetDouble(JsonElement element, string propertyName)
-{
-    if (!TryGetProperty(element, propertyName, out JsonElement property))
-    {
-        return null;
-    }
-
-    return property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out double value)
-        ? value
-        : null;
-}
-
-static double? TryGetDoubleFromPath(JsonElement element, params string[] path)
-{
-    JsonElement current = element;
-
-    foreach (string segment in path[..^1])
-    {
-        if (!TryGetProperty(current, segment, out current))
-        {
-            return null;
-        }
-    }
-
-    return TryGetDouble(current, path[^1]);
-}
-
-static bool? TryGetBool(JsonElement element, string propertyName)
-{
-    if (!TryGetProperty(element, propertyName, out JsonElement property))
-    {
-        return null;
-    }
-
-    return property.ValueKind switch
-    {
-        JsonValueKind.True => true,
-        JsonValueKind.False => false,
-        _ => null
-    };
-}
-
-static bool? TryGetBoolFromPath(JsonElement element, params string[] path)
-{
-    JsonElement current = element;
-
-    foreach (string segment in path[..^1])
-    {
-        if (!TryGetProperty(current, segment, out current))
-        {
-            return null;
-        }
-    }
-
-    return TryGetBool(current, path[^1]);
-}
-
-sealed record JsonTrackMetadata(
-    string? Title,
-    string? Artist,
+sealed record TrackDbRow(
+    long TrackId,
+    string Title,
+    string Artist,
     string? AlbumTitle,
     string? CoverUrl,
-    string? Quality,
-    double? DurationSeconds)
-{
-    public static JsonTrackMetadata Empty { get; } = new(null, null, null, null, null, null);
-}
+    string? QualityText,
+    double? DurationSeconds);

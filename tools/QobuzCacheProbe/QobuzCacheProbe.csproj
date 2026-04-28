@@ -9,4 +9,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.7" />
   </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\\..\\src\\QobuzPresence.Shared\\QobuzPresence.Shared.csproj" />
+  </ItemGroup>
 </Project>
