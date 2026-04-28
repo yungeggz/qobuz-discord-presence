@@ -1,5 +1,5 @@
 using System.Diagnostics;
-
+using QobuzPresence.Helpers;
 using QobuzPresence.Models;
 
 namespace QobuzPresence.Services;
@@ -7,12 +7,19 @@ namespace QobuzPresence.Services;
 public sealed class PresenceCoordinator : IDisposable
 {
     private static readonly TimeSpan s_activePollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan s_periodicPresenceRefreshInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan[] s_qualityRetrySchedule =
     [
         TimeSpan.FromSeconds(1),
         TimeSpan.FromSeconds(5),
         TimeSpan.FromSeconds(10),
         TimeSpan.FromSeconds(20)
+    ];
+    private static readonly TimeSpan[] s_presenceRefreshRetrySchedule =
+    [
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30)
     ];
 
     private readonly SettingsService _settingsService;
@@ -28,12 +35,12 @@ public sealed class PresenceCoordinator : IDisposable
     private DateTimeOffset? _lastPlaybackStartUtc;
     private DateTimeOffset _trackDetectedAtUtc = DateTimeOffset.MinValue;
     private bool _paused;
-
     private int _qualityRetryIndex;
     private bool _qualityResolvedForCurrentTrack;
-
     private PresenceSignature? _lastPresenceSignature;
     private PresenceSettingsSignature? _lastPresenceSettingsSignature;
+    private int _presenceRefreshRetryIndex;
+    private DateTimeOffset? _lastPresenceSentAtUtc;
     private bool _presenceClearedWhileWaiting;
 
     public event EventHandler<string>? StatusChanged;
@@ -60,8 +67,7 @@ public sealed class PresenceCoordinator : IDisposable
 
     public void Start()
     {
-        TimeSpan interval = s_activePollInterval;
-        _timer = new System.Threading.Timer(_ => _ = TickAsync(), null, TimeSpan.Zero, interval);
+        _timer = new System.Threading.Timer(_ => _ = TickAsync(), null, TimeSpan.Zero, s_activePollInterval);
     }
 
     public void ReloadSettings()
@@ -79,12 +85,12 @@ public sealed class PresenceCoordinator : IDisposable
             _discordService.ClearPresence();
             ResetPresenceTracking();
             OnTrackChanged(null);
-            OnStatusChanged("Paused");
+            OnStatusChanged(StatusMessages.Paused);
         }
         else
         {
             ResetPresenceTracking();
-            OnStatusChanged("Resumed");
+            OnStatusChanged(StatusMessages.Resumed);
             _ = TickAsync();
         }
     }
@@ -101,7 +107,7 @@ public sealed class PresenceCoordinator : IDisposable
         _discordService.ClearPresence();
         ResetPresenceTracking();
         OnTrackChanged(null);
-        OnStatusChanged("Presence cleared");
+        OnStatusChanged(StatusMessages.PresenceCleared);
     }
 
     public void Dispose()
@@ -113,7 +119,7 @@ public sealed class PresenceCoordinator : IDisposable
 
     private static bool IsQobuzRunning()
     {
-        Process[] processes = Process.GetProcessesByName("Qobuz");
+        Process[] processes = Process.GetProcessesByName(AppConstants.QobuzProcessName);
 
         try
         {
@@ -150,6 +156,8 @@ public sealed class PresenceCoordinator : IDisposable
         _trackDetectedAtUtc = DateTimeOffset.MinValue;
         _qualityResolvedForCurrentTrack = false;
         _qualityRetryIndex = 0;
+        _presenceRefreshRetryIndex = 0;
+        _lastPresenceSentAtUtc = null;
     }
 
     private async Task TickAsync()
@@ -171,19 +179,22 @@ public sealed class PresenceCoordinator : IDisposable
 
     private bool IsQualityRetryDue(DateTimeOffset now)
     {
-        if (_qualityResolvedForCurrentTrack)
+        if (_qualityResolvedForCurrentTrack || _qualityRetryIndex >= s_qualityRetrySchedule.Length)
         {
             return false;
         }
 
-        if (_qualityRetryIndex >= s_qualityRetrySchedule.Length)
+        return now - _trackDetectedAtUtc >= s_qualityRetrySchedule[_qualityRetryIndex];
+    }
+
+    private bool IsPresenceRefreshRetryDue(DateTimeOffset now)
+    {
+        if (_presenceRefreshRetryIndex >= s_presenceRefreshRetrySchedule.Length)
         {
             return false;
         }
 
-        TimeSpan retryDelay = s_qualityRetrySchedule[_qualityRetryIndex];
-
-        return now - _trackDetectedAtUtc >= retryDelay;
+        return now - _trackDetectedAtUtc >= s_presenceRefreshRetrySchedule[_presenceRefreshRetryIndex];
     }
 
     private void TickCore()
@@ -195,7 +206,7 @@ public sealed class PresenceCoordinator : IDisposable
 
         if (string.IsNullOrWhiteSpace(DiscordApplication.ClientId))
         {
-            OnStatusChanged("Missing Discord Client ID. Open Settings.");
+            OnStatusChanged(StatusMessages.MissingDiscordClientId);
             return;
         }
 
@@ -203,13 +214,13 @@ public sealed class PresenceCoordinator : IDisposable
         {
             ResetPresenceTracking();
             OnTrackChanged(null);
-            OnStatusChanged("Discord not connected. Is Discord Desktop running?");
+            OnStatusChanged(StatusMessages.DiscordNotConnected);
             return;
         }
 
         if (!IsQobuzRunning())
         {
-            ClearPresenceWhileWaiting("Waiting for Qobuz to open...");
+            ClearPresenceWhileWaiting(StatusMessages.WaitingForQobuzToOpen);
             return;
         }
 
@@ -217,7 +228,7 @@ public sealed class PresenceCoordinator : IDisposable
 
         if (activeWindowTrack is null)
         {
-            ClearPresenceWhileWaiting("Waiting for Qobuz playback...");
+            ClearPresenceWhileWaiting(StatusMessages.WaitingForQobuzPlayback);
             return;
         }
 
@@ -225,12 +236,11 @@ public sealed class PresenceCoordinator : IDisposable
 
         if (queueState is null)
         {
-            ClearPresenceWhileWaiting("Waiting for Qobuz playback...");
+            ClearPresenceWhileWaiting(StatusMessages.WaitingForQobuzPlayback);
             return;
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
-
         bool isNewTrack = _lastTrackId != queueState.TrackId;
         bool timerBaselineChanged = HasTimerBaselineChanged(queueState.PlaybackTiming);
 
@@ -242,11 +252,17 @@ public sealed class PresenceCoordinator : IDisposable
             _trackDetectedAtUtc = now;
             _qualityRetryIndex = 0;
             _qualityResolvedForCurrentTrack = false;
+            _presenceRefreshRetryIndex = 0;
         }
 
         bool qualityRetryDue = !isNewTrack && IsQualityRetryDue(now);
+        bool presenceRefreshRetryDue = !isNewTrack && IsPresenceRefreshRetryDue(now);
+        bool periodicPresenceRefreshDue =
+            _lastPresenceSentAtUtc.HasValue &&
+            now - _lastPresenceSentAtUtc.Value >= s_periodicPresenceRefreshInterval;
+        bool forcePresenceRefresh = presenceRefreshRetryDue || periodicPresenceRefreshDue;
 
-        if (!isNewTrack && !timerBaselineChanged && !qualityRetryDue && !presenceSettingsChanged)
+        if (!isNewTrack && !timerBaselineChanged && !qualityRetryDue && !presenceSettingsChanged && !forcePresenceRefresh)
         {
             return;
         }
@@ -256,19 +272,23 @@ public sealed class PresenceCoordinator : IDisposable
             _qualityRetryIndex++;
         }
 
-        TrackSnapshot? track = _trackReader.GetTrack(queueState.TrackId)
-            ?? BuildFallbackTrack(queueState.TrackId, queueState.PlaybackTiming, activeWindowTrack);
-
-        if (track is null)
+        if (presenceRefreshRetryDue)
         {
-            OnStatusChanged($"Track {queueState.TrackId} not found in Qobuz cache yet.");
-            return;
+            _presenceRefreshRetryIndex++;
         }
 
-        track = track with
+        TrackResolutionResult resolution = QobuzTrackResolutionHelper.Resolve(
+            _trackReader,
+            queueState.TrackId,
+            queueState.PlaybackTiming,
+            activeWindowTrack);
+
+        if (!string.IsNullOrWhiteSpace(resolution.StatusNote))
         {
-            PlaybackTiming = queueState.PlaybackTiming
-        };
+            OnStatusChanged(resolution.StatusNote);
+        }
+
+        TrackSnapshot track = resolution.Track;
 
         if (track.Quality is not null)
         {
@@ -277,7 +297,7 @@ public sealed class PresenceCoordinator : IDisposable
 
         PresenceSignature presenceSignature = BuildPresenceSignature(track, _settings);
 
-        if (presenceSignature == _lastPresenceSignature)
+        if (!forcePresenceRefresh && presenceSignature == _lastPresenceSignature)
         {
             return;
         }
@@ -288,11 +308,12 @@ public sealed class PresenceCoordinator : IDisposable
             _lastPlaybackStartUtc = queueState.PlaybackTiming?.StartedAtUtc;
             _lastPresenceSignature = presenceSignature;
             _lastPresenceSettingsSignature = currentSettingsSignature;
+            _lastPresenceSentAtUtc = now;
             _presenceClearedWhileWaiting = false;
 
             OnTrackChanged(track);
 
-            string quality = track.Quality?.DisplayText ?? "quality unavailable";
+            string quality = track.Quality?.DisplayText ?? AppConstants.QualityUnavailable;
             OnStatusChanged($"Showing {track.Title} - {track.Artist} ({quality})");
         }
         else
@@ -300,7 +321,7 @@ public sealed class PresenceCoordinator : IDisposable
             ResetPresenceTracking();
             _discordService.Disconnect();
             OnTrackChanged(null);
-            OnStatusChanged("Failed to update Discord presence. Will retry.");
+            OnStatusChanged(StatusMessages.FailedToUpdatePresence);
         }
     }
 
@@ -311,33 +332,13 @@ public sealed class PresenceCoordinator : IDisposable
             return false;
         }
 
-        DateTimeOffset currentStartUtc = playbackTiming.StartedAtUtc;
-
         if (!_lastPlaybackStartUtc.HasValue)
         {
             return true;
         }
 
-        TimeSpan drift = currentStartUtc - _lastPlaybackStartUtc.Value;
-
+        TimeSpan drift = playbackTiming.StartedAtUtc - _lastPlaybackStartUtc.Value;
         return Math.Abs(drift.TotalSeconds) >= 3;
-    }
-
-    private static TrackSnapshot? BuildFallbackTrack(long trackId, PlaybackTiming? playbackTiming, WindowTrackInfo windowTrack)
-    {
-        if (windowTrack is null)
-        {
-            return null;
-        }
-
-        return new TrackSnapshot(
-            trackId,
-            windowTrack.Title,
-            windowTrack.Artist ?? "Unknown Artist",
-            null,
-            null,
-            null,
-            playbackTiming);
     }
 
     private void OnStatusChanged(string status)
@@ -366,7 +367,6 @@ public sealed class PresenceCoordinator : IDisposable
         if (track.PlaybackTiming is not null)
         {
             DateTimeOffset startedAtUtc = track.PlaybackTiming.StartedAtUtc;
-
             timerStartUnixSeconds = startedAtUtc.ToUnixTimeSeconds();
 
             if (track.Duration.HasValue)

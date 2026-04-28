@@ -49,6 +49,7 @@ public sealed class DiscordPresenceService : IDisposable
             return false;
         }
 
+        string details = BuildDetailsText(track);
         string? qualityText = track.Quality?.DisplayText;
         string state = track.Artist;
 
@@ -74,7 +75,7 @@ public sealed class DiscordPresenceService : IDisposable
 
         RichPresence presence = new()
         {
-            Details = track.Title,
+            Details = details,
             State = state,
             Assets = assets,
             Timestamps = BuildTimestamps(track.Duration, track.PlaybackTiming)
@@ -125,6 +126,20 @@ public sealed class DiscordPresenceService : IDisposable
     public void Dispose()
     {
         Disconnect();
+    }
+
+    private static string BuildDetailsText(TrackSnapshot track)
+    {
+        string normalizedTitle = track.Title?.Trim() ?? string.Empty;
+
+        // Discord can fail to visibly refresh presence for one-character Details values.
+        // When the title is too short to stand on its own, expand it with the artist.
+        if (normalizedTitle.Length >= 2)
+        {
+            return normalizedTitle;
+        }
+
+        return $"{normalizedTitle} - {track.Artist}";
     }
 
     private static Timestamps? BuildTimestamps(

@@ -9,4 +9,6 @@ public sealed class AppSettings
     public string FallbackLargeImageKey { get; set; } = "qobuz";
 
     public bool StartWithWindows { get; set; } = false;
+
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
 }

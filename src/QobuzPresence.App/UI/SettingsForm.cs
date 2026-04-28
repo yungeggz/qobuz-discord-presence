@@ -12,6 +12,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _qualityInStateCheckBox = new();
     private readonly CheckBox _qualityInHoverCheckBox = new();
     private readonly CheckBox _startWithWindowsCheckBox = new();
+    private readonly CheckBox _checkForUpdatesOnStartupCheckBox = new();
     private readonly TextBox _previewTextBox = new();
 
     public SettingsForm(SettingsService settingsService, StartupService startupService, AppSettings settings)
@@ -53,7 +54,7 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Top,
             ColumnCount = 2,
-            RowCount = 7,
+            RowCount = 8,
             AutoSize = true
         };
 
@@ -71,6 +72,10 @@ public sealed class SettingsForm : Form
         _startWithWindowsCheckBox.Text = "Start with Windows";
         _startWithWindowsCheckBox.AutoSize = true;
         optionsPanel.Controls.Add(_startWithWindowsCheckBox, 1, 6);
+
+        _checkForUpdatesOnStartupCheckBox.Text = "Check for updates on startup";
+        _checkForUpdatesOnStartupCheckBox.AutoSize = true;
+        optionsPanel.Controls.Add(_checkForUpdatesOnStartupCheckBox, 1, 7);
 
         GroupBox previewGroup = new()
         {
@@ -123,6 +128,7 @@ public sealed class SettingsForm : Form
         _qualityInStateCheckBox.Checked = _settings.DisplayAudioQualityInState;
         _qualityInHoverCheckBox.Checked = _settings.DisplayAudioQualityInLargeImageHover;
         _startWithWindowsCheckBox.Checked = _settings.StartWithWindows || _startupService.IsEnabled();
+        _checkForUpdatesOnStartupCheckBox.Checked = _settings.CheckForUpdatesOnStartup;
     }
 
     private void RegisterPreviewEvents()
@@ -130,6 +136,7 @@ public sealed class SettingsForm : Form
         _qualityInStateCheckBox.CheckedChanged += (_, _) => UpdatePreview();
         _qualityInHoverCheckBox.CheckedChanged += (_, _) => UpdatePreview();
         _startWithWindowsCheckBox.CheckedChanged += (_, _) => UpdatePreview();
+        _checkForUpdatesOnStartupCheckBox.CheckedChanged += (_, _) => UpdatePreview();
     }
 
     private void UpdatePreview()
@@ -167,6 +174,7 @@ public sealed class SettingsForm : Form
         _settings.DisplayAudioQualityInState = _qualityInStateCheckBox.Checked;
         _settings.DisplayAudioQualityInLargeImageHover = _qualityInHoverCheckBox.Checked;
         _settings.StartWithWindows = _startWithWindowsCheckBox.Checked;
+        _settings.CheckForUpdatesOnStartup = _checkForUpdatesOnStartupCheckBox.Checked;
 
         _settingsService.Save(_settings);
         _startupService.SetEnabled(_settings.StartWithWindows);
